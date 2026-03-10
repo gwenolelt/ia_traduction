@@ -3,7 +3,7 @@ const express = require("express");
 const cors = require("cors");
 const fs = require("fs");
 const path = require("path");
-const { AzureOpenAI } = require("openai");
+const OpenAI = require("openai");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -15,11 +15,11 @@ app.use(express.json());
 // --- Chemin vers le fichier glossaire ---
 const GLOSSARY_PATH = path.join(__dirname, "glossary.json");
 
-// --- Client Azure OpenAI ---
-const client = new AzureOpenAI({
-  endpoint: process.env.AZURE_OPENAI_ENDPOINT,
-  apiKey: process.env.AZURE_OPENAI_API_KEY,
-  apiVersion: process.env.AZURE_OPENAI_API_VERSION,
+// =============================================
+// ROUTE RACINE (diagnostic)
+// =============================================
+app.get("/", (req, res) => {
+  res.json({ status: "ok", message: "Serveur de traduction opérationnel.", routes: ["/api/glossary", "/api/translate"] });
 });
 
 // =============================================
@@ -129,9 +129,14 @@ ${rules}
 Si un terme du glossaire apparaît dans le texte, utilise TOUJOURS la traduction indiquée ci-dessus, sans exception.`;
     }
 
-    // 3. Appeler Azure OpenAI avec le prompt enrichi du glossaire
+    // 3. Appeler Mistral AI avec le prompt enrichi du glossaire
+    const client = new OpenAI({
+      apiKey: process.env.MISTRAL_API_KEY,
+      baseURL: "https://api.mistral.ai/v1",
+    });
+
     const response = await client.chat.completions.create({
-      model: process.env.AZURE_OPENAI_DEPLOYMENT,
+      model: process.env.MISTRAL_MODEL || "mistral-large-latest",
       messages: [
         {
           role: "system",
@@ -152,8 +157,14 @@ ${glossaryInstructions}`,
     const translation = response.choices[0].message.content.trim();
     res.json({ translation });
   } catch (err) {
+    // Log complet pour faciliter le débogage côté serveur
     console.error("Erreur traduction :", err.message);
-    res.status(500).json({ error: "Erreur lors de la traduction. Vérifie ta configuration Azure OpenAI." });
+    if (err.status) console.error("  Status HTTP :", err.status);
+    if (err.error) console.error("  Détail Mistral :", JSON.stringify(err.error, null, 2));
+
+    // Renvoi du message d'erreur réel au front pour affichage
+    const detail = err.error?.message || err.message || "Erreur inconnue";
+    res.status(500).json({ error: `Erreur Mistral : ${detail}` });
   }
 });
 

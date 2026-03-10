@@ -22,12 +22,18 @@ async function translate() {
       body: JSON.stringify({ text: sourceText.value }),
     });
 
-    if (!response.ok) {
-      const err = await response.json();
-      throw new Error(err.error || "Erreur serveur");
+    const text = await response.text();
+    let data;
+    try {
+      data = JSON.parse(text);
+    } catch {
+      throw new Error("Réponse invalide du serveur.");
     }
 
-    const data = await response.json();
+    if (!response.ok) {
+      throw new Error(data.error || "Erreur serveur");
+    }
+
     translatedText.value = data.translation;
   } catch (err) {
     errorMessage.value = err.message;
