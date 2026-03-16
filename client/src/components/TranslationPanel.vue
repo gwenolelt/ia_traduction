@@ -1,9 +1,11 @@
 <script setup>
-import { ref, onMounted } from "vue";
+import { ref } from "vue";
 
 // --- État ---
 const sourceText = ref("");
 const translatedText = ref("");
+const translationSource = ref(""); // "memory", "ai" ou "mixed"
+const translationTime = ref(null); // Temps de réponse en ms/s
 const isLoading = ref(false);
 const errorMessage = ref("");
 
@@ -14,6 +16,10 @@ async function translate() {
   isLoading.value = true;
   errorMessage.value = "";
   translatedText.value = "";
+  translationSource.value = "";
+  translationTime.value = null;
+
+  const startTime = performance.now();
 
   try {
     const response = await fetch("/api/translate", {
@@ -35,6 +41,8 @@ async function translate() {
     }
 
     translatedText.value = data.translation;
+    translationSource.value = data.source;
+    translationTime.value = ((performance.now() - startTime) / 1000).toFixed(2);
   } catch (err) {
     errorMessage.value = err.message;
   } finally {
@@ -77,6 +85,31 @@ async function translate() {
         rows="10"
         readonly
       ></textarea>
+    </div>
+
+    <!-- Feedback Source & Temps -->
+    <div v-if="translatedText && !isLoading" class="feedback-stats">
+      <span
+        v-if="translationSource === 'memory'"
+        class="badge badge-success"
+      >
+        ⚡ Source : Mémoire de traduction
+      </span>
+      <span
+        v-else-if="translationSource === 'ai'"
+        class="badge badge-info"
+      >
+        🤖 Source : Mistral AI
+      </span>
+      <span
+        v-else-if="translationSource === 'mixed'"
+        class="badge badge-warning"
+      >
+        🔄 Source : Mixte (Mémoire + IA)
+      </span>
+      <span class="time-info" v-if="translationTime">
+        Temps de réponse : {{ translationTime }} s
+      </span>
     </div>
   </section>
 </template>
@@ -154,5 +187,39 @@ textarea[readonly] {
   color: var(--color-danger);
   font-size: 0.9rem;
   margin-bottom: 12px;
+}
+
+/* --- Feedback Stats --- */
+.feedback-stats {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 8px;
+  font-size: 0.85rem;
+}
+
+.badge {
+  padding: 4px 10px;
+  border-radius: 12px;
+  font-weight: 600;
+}
+
+.badge-success {
+  background-color: #dcfce7;
+  color: #166534;
+}
+
+.badge-info {
+  background-color: #dbeafe;
+  color: #1e40af;
+}
+
+.badge-warning {
+  background-color: #fef9c3;
+  color: #854d0e;
+}
+
+.time-info {
+  color: var(--color-text-light);
 }
 </style>

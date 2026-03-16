@@ -1,7 +1,6 @@
 {
-  "CO2": "dioxyde de carbone",
-  "machine learning": "apprentissage automatique",
-  "deep learning": "apprentissage profond",
-  "cloud computing": "informatique en nuage",
-  "WSL": "wireless system language"
+  "CO₂": "dioxyde de carbone",
+  "H₂O": "C'EST DE L'EAU",
+  "IA": "intelligence artificielle",
+  "DELETE": "supprimer"
 }
