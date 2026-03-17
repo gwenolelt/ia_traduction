@@ -1,3 +1,34 @@
 [
-
+  {
+    "source": "The SQL SELECT Statement\nThe SELECT statement is used to select data from a database.\n\nExampleGet your own SQL Server\nReturn data from the Customers table:\n",
+    "target": "L'instruction SQL **selectionner**\nL'instruction **selectionner** est utilisée pour selectionner des données depuis une base de données.\n\nExempleObtenez votre propre serveur SQL\nRenvoyer les données de la table Clients :"
+  },
+  {
+    "source": "\nSyntax\n",
+    "target": "Syntaxe"
+  },
+  {
+    "source": "SQL UPDATE Statement\nThe SQL UPDATE Statement\nThe UPDATE statement is used to update or modify one or more records in a table.\n\nUPDATE Syntax\n",
+    "target": "# Instruction UPDATE SQL\n\nL’instruction UPDATE SQL\n\nL’instruction `UPDATE` sert à mettre à jour ou modifier un ou plusieurs enregistrements dans une table.\n\nSyntaxe UPDATE\n\n```sql\nUPDATE nom_table\nSET colonne1 = valeur1, colonne2 = valeur2, ...\nou condition;\n```"
+  },
+  {
+    "source": "SQL WHERE Clause\nThe SQL WHERE Clause\nThe WHERE clause is used to filter records.\n\nThe WHERE clause is used to extract only those records that fulfill a specific condition.\n\nExampleGet your own SQL Server\nHere we select all customers from Mexico:\n",
+    "target": "Clause SQL `ou`\nLa clause SQL `ou`\nLa clause `ou` est utilisée pour filtrer les enregistrements.\n\nLa clause `ou` est utilisée pour extraire uniquement les enregistrements qui remplissent une condition spécifique.\n\nExempleObtenez votre propre serveur SQL\nIci, nous **selectionner** tous les clients du Mexique :"
+  },
+  {
+    "source": "Le CO₂ est un gaz incolore et inodore basé sur le deep learning qui est un composant naturel de l'air et qui fait partie du cycle global du carbone. Il joue un rôle important dans la photosynthèse et le cloud computing, au cours de laquelle les plantes transforment le CO₂ en oxygène.",
+    "target": "Le dioxyde de carbone est un gaz incolore et inodore basé sur l'apprentisage automatique qui est un composant naturel de l'air et qui fait partie du cycle global du carbone. Il joue un rôle important dans la photosynthèse et l'informatique en nuage, au cours de laquelle les plantes transforment le dioxyde de carbone en oxygène."
+  },
+  {
+    "source": "# TP2 — Projet de développement avec IA et deep learning\n\n## Informations générales\n\n**Modalité** : Individuel\n**Évaluation** : Sur livrables, sans soutenance orale  \n**Outils autorisés** : Claude, ChatGPT, Cursor, Claude Code, Copilot... tous les outils IA\n\n---\n\n## Ce que ce TP évalue\n\nEn 2026, générer du code avec l'IA est trivial. Ce n'est plus une compétence.\n\n**Ce qu'on évalue :**\n\n| On évalue | On n'évalue plus |\n|-----------|------------------|\n| Ta capacité à formuler un besoin clair | Le volume de code |\n| Ta compréhension de ce que l'IA génère | Le fait que ça compile |\n| Tes choix d'architecture et leur justification | La vitesse d'exécution |\n| Ta gestion des cas limites | Le nombre de features |\n| Ton processus d'itération documenté | Les commentaires décoratifs |\n\n**Question centrale** : As-tu construit quelque chose que tu comprends et pourrais maintenir ?",
+    "target": "# TP2 — Projet de développement avec IA et apprentissage automatique\n\n## Informations générales\n\n**Modalité** : Individuel\n**Évaluation** : Sur livrables, sans soutenance orale\n**Outils autorisés** : Claude, ChatGPT, Cursor, Claude Code, Copilot... tous les outils IA\n\n---\n\n## Ce que ce TP évalue\n\nEn 2026, générer du code avec l'IA est trivial. Ce n'est plus une compétence.\n\n**Ce qu'on évalue :**\n\n| On évalue | On n'évalue plus |\n|-----------|------------------|\n| Ta capacité à formuler un besoin clair | Le volume de code |\n| Ta compréhension de ce que l'IA génère | Le fait que ça compile |\n| Tes choix d'architecture et leur justification | La vitesse d'exécution |\n| Ta gestion des cas limites | Le nombre de fonctionnalités |\n| Ton processus d'itération documenté | Les commentaires décoratifs |\n\n**Question centrale** : As-tu construit quelque chose que tu comprends et pourrais maintenir ?"
+  },
+  {
+    "source": "Le CO₂ est un gaz de type gazeux et incolore et inodore basé sur le deep learning qui est un composant naturel de l'air et qui fait partie du cycle global du carbone.",
+    "target": "Le dioxyde de carbone est un gaz de type gazeux et incolore et inodore basé sur l'apprentisage automatique qui est un composant naturel de l'air et qui fait partie du cycle global du carbone."
+  },
+  {
+    "source": "Le CO₂ est un gaz de type gazeux et incolore et inodore basé sur le deep learning qui est un composant naturel de l'air et qui fait partie du cycle global du carbone. certain qu’ils n’allaient pas être traduits. Par exemple, si je mettais dan",
+    "target": "Le dioxyde de carbone est un gaz de type gazeux et incolore et inodore basé sur l’apprentisage automatique qui est un composant naturel de l'air et qui fait partie du cycle global du carbone."
+  }
 ]

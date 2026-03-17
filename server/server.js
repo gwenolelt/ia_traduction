@@ -5,7 +5,6 @@ const fs = require("fs");
 const path = require("path");
 const OpenAI = require("openai");
 const stringSimilarity = require("string-similarity");
-const { extractCode, restoreCode } = require("./markdownParser");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -17,6 +16,13 @@ app.use(express.json());
 // --- Chemin vers le fichier glossaire ---
 const GLOSSARY_PATH = path.join(__dirname, "glossary.json");
 const TM_PATH = path.join(__dirname, "translation_memory.json");
+
+// --- Client Mistral (via SDK OpenAI) ---
+const client = new OpenAI({
+  apiKey: process.env.MISTRAL_API_KEY,
+  baseURL: "https://api.mistral.ai/v1",
+});
+const MISTRAL_MODEL = process.env.MISTRAL_MODEL || "mistral-large-latest";
 
 // =============================================
 // ROUTE RACINE (diagnostic)
@@ -96,13 +102,205 @@ app.delete("/api/glossary/:source", (req, res) => {
 });
 
 // =============================================
-// ROUTE TRADUCTION
+// ROUTE TRADUCTION — Pipeline en 2 phases
 // =============================================
+
+/**
+ * PHASE 1 : Analyse du texte par Mistral
+ *
+ * Envoie le texte brut à Mistral et lui demande de retourner un JSON
+ * structuré séparant les parties texte des parties code/markdown.
+ *
+ * @param {string} text — Le texte source complet
+ * @returns {Array<{type: string, content: string}>} — Tableau de parts
+ */
+async function analyzeText(text) {
+  console.log("[PHASE 1] Analyse du texte par Mistral...");
+
+  const response = await client.chat.completions.create({
+    model: MISTRAL_MODEL,
+    messages: [
+      {
+        role: "system",
+        content: `Tu es un analyseur de texte technique. Ta tâche est de séparer un texte en parties distinctes : le texte en langage naturel et le code/markdown technique.
+
+RÈGLES STRICTES :
+1. Tu dois retourner UNIQUEMENT un JSON valide, sans aucun commentaire ni texte autour.
+2. Le JSON doit avoir exactement cette structure : { "parts": [...] }
+3. Chaque élément du tableau "parts" doit avoir :
+   - "type" : soit "text" (texte en langage naturel à traduire), soit "code" (code ou markdown technique à conserver tel quel)
+   - "content" : le contenu exact de cette partie, caractère pour caractère
+4. Les blocs de code délimités par des backticks (\`\`\` ... \`\`\`) sont de type "code".
+5. Le code en ligne entouré de backticks simples (\`...\`) fait partie du texte qui l'entoure — garde-le dans le segment "text" avec son contexte.
+6. Les lignes qui ressemblent à du code brut (SQL, JavaScript, Python, etc.) sans backticks sont de type "code".
+7. Les titres Markdown (#, ##, etc.), listes, gras (**), italique (*) sont de type "text" — c'est du formatage de texte, pas du code.
+8. IMPORTANT : la concaténation de tous les "content" dans l'ordre doit redonner EXACTEMENT le texte original, octet par octet. Ne perds aucun caractère, aucun espace, aucun saut de ligne.
+9. Ne fusionne PAS les blocs de code consécutifs s'ils sont séparés par du texte.
+10. Si le texte ne contient aucun code, renvoie un seul élément de type "text".
+
+Exemple d'entrée :
+Here is an example:
+\`\`\`sql
+SELECT * FROM users;
+\`\`\`
+This query returns all users.
+
+Exemple de sortie attendue :
+{"parts":[{"type":"text","content":"Here is an example:\\n"},{"type":"code","content":"\`\`\`sql\\nSELECT * FROM users;\\n\`\`\`"},{"type":"text","content":"\\nThis query returns all users."}]}`
+      },
+      {
+        role: "user",
+        content: text,
+      },
+    ],
+    temperature: 0,
+    response_format: { type: "json_object" },
+  });
+
+  const raw = response.choices[0].message.content.trim();
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (e) {
+    console.error("[PHASE 1] Échec du parsing JSON, fallback texte intégral.", e.message);
+    // Fallback : tout le texte est considéré comme du texte à traduire
+    return [{ type: "text", content: text }];
+  }
+
+  if (!parsed.parts || !Array.isArray(parsed.parts)) {
+    console.warn("[PHASE 1] Format inattendu, fallback texte intégral.");
+    return [{ type: "text", content: text }];
+  }
+
+  console.log(`[PHASE 1] ${parsed.parts.length} parties détectées (${parsed.parts.filter(p => p.type === "code").length} code, ${parsed.parts.filter(p => p.type === "text").length} texte).`);
+  return parsed.parts;
+}
+
+/**
+ * PHASE 2 : Traduction d'un segment de texte
+ *
+ * 1. Cherche dans le RAG (TM) un segment similaire (> 0.9)
+ * 2. Si trouvé ET conforme au glossaire → utilise la traduction RAG
+ * 3. Sinon → traduit via Mistral avec le glossaire injecté
+ *
+ * @param {string} segment — Le segment de texte à traduire
+ * @param {Object} glossary — Le glossaire {source: target}
+ * @param {Array} tmModel — La mémoire de traduction
+ * @param {Array} tmSources — Les sources de la TM (pour la recherche de similarité)
+ * @returns {{ translated: string, source: string, newEntry: {source, target}|null }}
+ */
+async function translateSegment(segment, glossary, tmModel, tmSources) {
+  const glossaryEntries = Object.entries(glossary);
+
+  // --- RAG : chercher dans la Mémoire de Traduction ---
+  let bestMatch = null;
+  let matchScore = 0;
+  if (tmSources.length > 0) {
+    const match = stringSimilarity.findBestMatch(segment, tmSources);
+    matchScore = match.bestMatch.rating;
+    if (matchScore >= 0.9) {
+      bestMatch = tmModel.find(entry => entry.source === match.bestMatch.target);
+    }
+  }
+
+  // --- Vérification du glossaire sur le résultat RAG ---
+  if (bestMatch && glossaryEntries.length > 0) {
+    let glossaryRespected = true;
+    for (const [source, target] of glossaryEntries) {
+      const escapedSource = source.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&');
+      const sourceRegex = new RegExp(`\\b(${escapedSource})\\b`, "gi");
+
+      if (sourceRegex.test(segment)) {
+        if (!bestMatch.target.toLowerCase().includes(target.toLowerCase())) {
+          glossaryRespected = false;
+          console.log(`  [GLOSSAIRE] Conflit détecté, le glossaire annule le RAG pour "${source}"`);
+          break;
+        }
+      }
+    }
+    if (!glossaryRespected) {
+      bestMatch = null;
+    }
+  }
+
+  // --- Si RAG accepté ---
+  if (bestMatch) {
+    console.log(`  [RAG] Traduction récupérée (Score: ${matchScore.toFixed(2)})`);
+    return { translated: bestMatch.target, source: "memory", newEntry: null };
+  }
+
+  // --- Sinon : traduction Mistral avec glossaire ---
+  console.log(`  [MISTRAL] Traduction par IA...`);
+
+  // Construire les instructions du glossaire
+  let glossaryInstructions = "";
+  if (glossaryEntries.length > 0) {
+    const rules = glossaryEntries
+      .map(([source, target]) => `  - "${source}" → "${target}"`)
+      .join("\n");
+
+    glossaryInstructions = `
+GLOSSAIRE — Traductions OBLIGATOIRES :
+${rules}
+
+Dans le texte source, les mots du glossaire sont balisés avec <term translation="...">mot</term>.
+Applique TOUJOURS la traduction indiquée dans l'attribut "translation" pour ces mots.
+- Ne conserve JAMAIS aucune balise <term> ni </term> dans ta réponse finale.`;
+  }
+
+  // Injecter les tags <term> du glossaire dans le segment
+  let segmentForMistral = segment;
+  if (glossaryEntries.length > 0) {
+    for (const [source, target] of glossaryEntries) {
+      const escapedSource = source.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&');
+      const regex = new RegExp(`\\b(${escapedSource})\\b`, "gi");
+      segmentForMistral = segmentForMistral.replace(regex, `<term translation="${target}">$1</term>`);
+    }
+  }
+
+  const response = await client.chat.completions.create({
+    model: MISTRAL_MODEL,
+    messages: [
+      {
+        role: "system",
+        content: `Tu es un traducteur technique automatisé anglais → français.
+TA TÂCHE EST DE FOURNIR UNIQUEMENT LA TRADUCTION FINALE.
+RÈGLE STRICTE : NE DIS JAMAIS "Voici la traduction", "Voici le texte", etc. Renvoie uniquement le texte traduit, SANS aucun commentaire.
+
+FORMATAGE MARKDOWN — Préserve intégralement la structure Markdown (titres #, listes -, gras **, etc.).
+Le code en ligne entouré de backticks (\`...\`) doit être conservé tel quel, sans modification.
+${glossaryInstructions}`
+      },
+      {
+        role: "user",
+        content: segmentForMistral,
+      },
+    ],
+    temperature: 0.1,
+  });
+
+  let translated = response.choices[0].message.content.trim();
+
+  // Nettoyage de sécurité
+  translated = translated.replace(/^Voici la traduction.*?:?\n+/i, '');
+  translated = translated.replace(/^Voici le texte.*?:?\n+/i, '');
+  translated = translated.replace(/<term[^>]*>|<\/term>/gi, '');
+
+  return {
+    translated,
+    source: "ai",
+    newEntry: { source: segment, target: translated },
+  };
+}
 
 /**
  * POST /api/translate
  * Traduit un texte anglais → français en respectant le glossaire.
  * Body attendu : { "text": "texte à traduire" }
+ *
+ * Pipeline en 2 phases :
+ *   Phase 1 — Mistral analyse le texte et isole le code/markdown
+ *   Phase 2 — Traduction des segments textuels (RAG puis Mistral + glossaire)
  */
 app.post("/api/translate", async (req, res) => {
   const { text } = req.body;
@@ -112,194 +310,79 @@ app.post("/api/translate", async (req, res) => {
   }
 
   try {
-    // 1. Pré-traitement : extraction du code (blocs + inline) → placeholders
-    const { cleanedText, codeMap } = extractCode(text);
-
-    // 2. Charger le glossaire
+    // 1. Charger le glossaire
     const glossaryData = fs.readFileSync(GLOSSARY_PATH, "utf-8");
     const glossary = JSON.parse(glossaryData);
 
-    // 3. Charger la Mémoire de Traduction (TM)
+    // 2. Charger la Mémoire de Traduction (TM)
     let tmModel = [];
     if (fs.existsSync(TM_PATH)) {
       tmModel = JSON.parse(fs.readFileSync(TM_PATH, "utf-8"));
     }
     const tmSources = tmModel.map(entry => entry.source);
 
-    // 4. Construire les règles du glossaire pour le prompt
-    const glossaryEntries = Object.entries(glossary);
-    let glossaryInstructions = "";
-    if (glossaryEntries.length > 0) {
-      const rules = glossaryEntries
-        .map(([source, target]) => `  - "${source}" → "${target}"`)
-        .join("\n");
+    // 3. PHASE 1 — Analyse du texte par Mistral (isolation code/markdown)
+    const parts = await analyzeText(text);
 
-      glossaryInstructions = `
-GLOSSAIRE (PRIORITÉ SECONDAIRE PAR RAPPORT AU CODE) :
-Voici les traductions de référence :
-${rules}
-
-IMPORTANT : Dans le texte source, certains mots de ce glossaire ont été mis en évidence avec des balises <term translation="..."></term>.
-HIÉRARCHIE DES RÈGLES : La règle de NON-TRADUCTION DU CODE est TOUJOURS prioritaire !
-- Si le mot étiqueté par <term> fait manifestement partie d'une requête SQL (ex: "DELETE" dans "DELETE * FROM"), d'une ligne de code ou du nom d'une variable technique : CONSERVE LE MOT D'ORIGINE ET IGNORE LE GLOSSAIRE. Ne le traduis pas !
-- Si le mot étiqueté fait partie d'une phrase en contexte de langage naturel classique : Applique la traduction indiquée dans l'attribut "translation".
-- Ne conserve JAMAIS aucune balise <term> ni </term> dans ta réponse finale.`;
-    }
-
-    // 5. Configurer le client OpenAI
-    const client = new OpenAI({
-      apiKey: process.env.MISTRAL_API_KEY,
-      baseURL: "https://api.mistral.ai/v1",
-    });
-
-    // 6. Segmentation et Traduction segment par segment
-    // Split par double saut de ligne (paragraphes) pour préserver le contexte du code/SQL.
-    // L'expression régulière conserve les séparateurs ((\r?\n\r?\n+)) dans le tableau de segments.
-    const segments = cleanedText.split(/(\r?\n\r?\n+)/);
-    const translatedSegments = [];
+    // 4. PHASE 2 — Traduction segment par segment
+    const translatedParts = [];
     let hasNewTranslations = false;
     let tmCount = 0;
     let aiCount = 0;
 
-    // Pour optimiser, nous traitons segment par segment de façon séquentielle
-    for (const segment of segments) {
-      if (!segment.trim()) {
-        translatedSegments.push(segment); // Conserver les sauts de ligne exacts
+    for (let i = 0; i < parts.length; i++) {
+      const part = parts[i];
+
+      if (part.type === "code") {
+        // Le code est conservé tel quel — aucune modification
+        console.log(`[Part ${i + 1}/${parts.length}] CODE — conservé intact.`);
+        translatedParts.push(part.content);
         continue;
       }
 
-      // ==========================================
-      // 🥇 PRIORITÉ 1 : PROTECTION DU CODE & MARKDOWN
-      // ==========================================
-      // Si le segment est entièrement composé de code (placeholders) ou de caractères non alphabétiques,
-      // on bloque immédiatement : on ne fait ni glossaire, ni RAG, ni IA.
-      const onlyPlaceholdersRegex = /^([\s]*\[\[(CODE_BLOCK|INLINE_CODE)_\d+\]\][\s]*)+$/;
-      if (onlyPlaceholdersRegex.test(segment)) {
-        console.log(`[PRIORITÉ 1 - CODE] Segment 100% code détecté, conservation absolue.`);
-        translatedSegments.push(segment);
-        continue; // On passe au segment suivant
+      // Type "text" — à traduire
+      const content = part.content;
+
+      // Si le segment est vide ou que des espaces/sauts de ligne
+      if (!content.trim()) {
+        translatedParts.push(content);
+        continue;
       }
 
-      // ==========================================
-      // 🥈 PRIORITÉ 2 & 3 : GLOSSAIRE D'ABORD, RAG ENSUITE
-      // ==========================================
-      let bestMatch = null;
-      let matchScore = 0;
-      if (tmSources.length > 0) {
-        const match = stringSimilarity.findBestMatch(segment, tmSources);
-        matchScore = match.bestMatch.rating;
-        if (matchScore > 0.9) {
-          bestMatch = tmModel.find(entry => entry.source === match.bestMatch.target);
-        }
-      }
+      console.log(`[Part ${i + 1}/${parts.length}] TEXTE — traduction en cours...`);
 
-      // Vérification absolue du glossaire sur le résultat du RAG :
-      // Le Glossaire Prime sur la mémoire de traduction.
-      if (bestMatch && glossaryEntries.length > 0) {
-        let glossaryRespected = true;
-        for (const [source, target] of glossaryEntries) {
-          const escapedSource = source.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&');
-          const sourceRegex = new RegExp(`\\b(${escapedSource})\\b`, "gi");
-          
-          if (sourceRegex.test(segment)) {
-            // Le RAG doit obligatoirement contenir la traduction officielle du glossaire
-            if (!bestMatch.target.toLowerCase().includes(target.toLowerCase())) {
-              glossaryRespected = false;
-              console.log(`[PRIORITÉ 2 - GLOSSAIRE] Conflit détecté, le glossaire annule le RAG pour le terme "${source}"`);
-              break;
-            }
-          }
-        }
-        
-        if (!glossaryRespected) {
-          bestMatch = null; // RAG refusé car il ne respecte pas la Priorité 2
-        }
-      }
+      const result = await translateSegment(content, glossary, tmModel, tmSources);
+      translatedParts.push(result.translated);
 
-      if (bestMatch) {
-         console.log(`[PRIORITÉ 3 - RAG] Récupération acceptée (Score: ${matchScore.toFixed(2)})`);
-         translatedSegments.push(bestMatch.target);
-         tmCount++;
+      if (result.source === "memory") {
+        tmCount++;
       } else {
-         console.log(`[MISTRAL] Appel API (Glossaire et Code sécurisés en amont)`);
-         // 6.b Préparer le segment pour Mistral (avec les tags du glossaire)
-         let segmentForMistral = segment;
-         if (glossaryEntries.length > 0) {
-            for (const [source, target] of glossaryEntries) {
-              const escapedSource = source.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&');
-              const regex = new RegExp(`\\b(${escapedSource})\\b`, "gi");
-              segmentForMistral = segmentForMistral.replace(regex, `<term translation="${target}">$1</term>`);
-            }
-         }
+        aiCount++;
+      }
 
-         // 6.c Appel Mistral
-         const response = await client.chat.completions.create({
-            model: process.env.MISTRAL_MODEL || "mistral-large-latest",
-            messages: [
-              {
-                role: "system",
-                content: `Tu es un traducteur technique automatisé.
-TA TÂCHE EST DE FOURNIR UNIQUEMENT LA TRADUCTION FINALE.
-RÈGLE STRICTE N°1 : NE DIS JAMAIS "Voici la traduction", "Voici le texte", etc. N'inclus ABSOLUMENT AUCUNE phrase d'introduction ou de conclusion. Renvoie 100% de code brut/texte traduit, SANS aucun commentaire humain autour.
-
-RÈGLES STRICTES POUR LE CODE ET LES NOMS TECHNIQUES NON MARQUÉS :
-Même si le code n'est pas dans un bloc Markdown, TU NE DOIS JAMAIS TRADUIRE :
-- Les requêtes SQL (ex: laisse absolument les mots comme SELECT, FROM, WHERE, etc. intacts). Si la phrase entière est du code SQL, recopie-la telle quelle.
-- Les mots clés de langages de programmation (function, const, return, etc.).
-- Les noms de variables, de colonnes, de tables ou de fonctions (ex: Country, CustomerName, Customers, etc.)
-- La casse des noms techniques (CamelCase, PascalCase, snake_case) doit être préservée.
-- Les identifiants entre guillemets présents dans les exemples de code (ex: "Spain", 'G%').
-
-PLACEHOLDERS DE CODE — Le texte contient des marqueurs spéciaux entre doubles crochets (ex: [[CODE_BLOCK_0]], [[INLINE_CODE_1]]).
-Tu DOIS les recopier EXACTEMENT tels quels. Ne les modifie pas.
-
-FORMATAGE MARKDOWN — Préserve intégralement la structure Markdown (titres #, listes -, gras **, etc.).
-${glossaryInstructions}`
-              },
-              {
-                role: "user",
-                content: segmentForMistral,
-              },
-            ],
-            temperature: 0.1,
-         });
-
-         let translated = response.choices[0].message.content.trim();
-         
-         // Nettoyage de sécurité : Retirer les "Voici la traduction :" si Mistral s'entête
-         translated = translated.replace(/^Voici la traduction.*?:?\n+/i, '');
-         translated = translated.replace(/^Voici le texte.*?:?\n+/i, '');
-         
-         // Nettoyage de sécurité : Retirer les balises <term> si Mistral les a laissées
-         translated = translated.replace(/<term[^>]*>|<\/term>/gi, '');
-
-         translatedSegments.push(translated);
-         aiCount++;
-         
-         // 6.d Apprentissage : enregistrer le segment
-         tmModel.push({ source: segment, target: translated });
-         tmSources.push(segment);
-         hasNewTranslations = true;
+      // Apprentissage : enregistrer le nouveau segment dans la TM
+      if (result.newEntry) {
+        tmModel.push(result.newEntry);
+        tmSources.push(result.newEntry.source);
+        hasNewTranslations = true;
       }
     }
 
-    // 7. Sauvegarder la TM si de nouvelles traductions ont été ajoutées
+    // 5. Sauvegarder la TM si de nouvelles traductions ont été ajoutées
     if (hasNewTranslations) {
       fs.writeFileSync(TM_PATH, JSON.stringify(tmModel, null, 2), "utf-8");
     }
 
-    // 8. Reconstruire le texte complet
-    // Les espacements/sauts de lignes sont conservés dans les segments, on met juste ""
-    const rawTranslation = translatedSegments.join("");
+    // 6. Reconstruire le texte complet
+    const translation = translatedParts.join("");
 
-    // 9. Post-traitement : réinjection du code original à la place des placeholders
-    const translation = restoreCode(rawTranslation, codeMap);
-
-    // 10. Déterminer la source globale
+    // 7. Déterminer la source globale
     let overallSource = "none";
     if (aiCount > 0 && tmCount > 0) overallSource = "mixed";
     else if (aiCount > 0) overallSource = "ai";
     else if (tmCount > 0) overallSource = "memory";
+
+    console.log(`[RÉSULTAT] Source: ${overallSource} | IA: ${aiCount} | RAG: ${tmCount}`);
 
     res.json({ translation, source: overallSource });
   } catch (err) {

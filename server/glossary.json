@@ -1,6 +1,9 @@
 {
   "CO₂": "dioxyde de carbone",
   "H₂O": "C'EST DE L'EAU",
-  "IA": "intelligence artificielle",
-  "DELETE": "supprimer"
+  "IA": "ne pas traduire",
+  "deep learning": "apprentisage automatique",
+  "cloud computing": "informatique en nuage",
+  "WHERE": "ou",
+  "SELECT": "selectionner"
 }
